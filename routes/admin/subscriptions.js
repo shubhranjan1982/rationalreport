@@ -8,7 +8,9 @@ router.use(requireOwnerAuth);
 
 router.get('/', async (req, res) => {
   try {
-    const subs = await query('SELECT * FROM subscriptions ORDER BY created_at DESC');
+    const subs = await query(
+      'SELECT s.*, c.name AS client_name, c.email AS client_email, p.name AS plan_name, p.duration_months AS plan_duration_months FROM subscriptions s LEFT JOIN clients c ON s.client_id = c.id LEFT JOIN subscription_plans p ON s.plan_id = p.id ORDER BY s.created_at DESC'
+    );
     res.json(subs);
   } catch (err) { console.error(err); res.status(500).json({ message: 'Server error' }); }
 });
