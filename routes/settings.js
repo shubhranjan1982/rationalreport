@@ -66,10 +66,12 @@ router.post('/', async (req, res) => {
     } else {
       const sId = generateUUID();
       await query(
-        'INSERT INTO analyst_settings (id, client_id, analyst_name, sebi_reg_number, company_name, website_url, telegram_bot_token, paid_channel_id, free_channel_id, automation_time, disclaimer_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO analyst_settings (id, client_id, analyst_name, sebi_reg_number, company_name, website_url, telegram_bot_token, paid_channel_id, free_channel_id, automation_time, disclaimer_text, private_relay_channel_id, kite_api_key, kite_api_secret, ai_provider, ai_api_key, signature_image_path, logo_image_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [sId, clientId, data.analystName || '', data.sebiRegNumber || '', data.companyName || '',
          data.websiteUrl || '', data.telegramBotToken || '', data.paidChannelId || '',
-         data.freeChannelId || '', data.automationTime || '16:00', data.disclaimerText || '']
+         data.freeChannelId || '', data.automationTime || '16:00', data.disclaimerText || '',
+         data.privateRelayChannelId || '', data.kiteApiKey || '', data.kiteApiSecret || '',
+         data.aiProvider || 'gemini', data.aiApiKey || '', data.signatureImagePath || '', data.logoImagePath || '']
       );
     }
 
