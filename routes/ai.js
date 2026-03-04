@@ -124,7 +124,16 @@ Rules:
     if (result.error) return res.status(400).json({ message: result.error });
 
     let text = result.text.replace(/```json\s*/g, '').replace(/```\s*/g, '');
-    const parsed = JSON.parse(text.trim());
+    let parsed;
+    try {
+      parsed = JSON.parse(text.trim());
+    } catch (e) {
+      return res.status(400).json({ message: 'Could not parse AI response', raw: result.text });
+    }
+
+    if (!parsed) {
+      return res.status(400).json({ message: 'Could not parse AI response', raw: result.text });
+    }
 
     if (tradeId) {
       let verifySql = 'SELECT id FROM trades WHERE id = ?';
