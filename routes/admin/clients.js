@@ -31,6 +31,8 @@ router.delete('/:id', async (req, res) => {
     await query('DELETE FROM analyst_settings WHERE client_id = ?', [req.params.id]);
     await query('DELETE FROM channel_groups WHERE client_id = ?', [req.params.id]);
     await query('DELETE FROM daily_summaries WHERE client_id = ?', [req.params.id]);
+    await query('DELETE FROM oi_snapshots WHERE client_id = ?', [req.params.id]);
+    await query('DELETE FROM screener_presets WHERE client_id = ?', [req.params.id]);
     await query('DELETE FROM report_consents WHERE client_id = ?', [req.params.id]);
     await query('DELETE FROM clients WHERE id = ?', [req.params.id]);
 
