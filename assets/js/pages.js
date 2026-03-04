@@ -433,9 +433,14 @@ const Pages = {
         try {
             const result = await App.api('/api/telegram/smart-fetch', 'POST', {});
             const dateInfo = (result.datesFetched || []).map(d => `${d.date}: ${d.tradesFound} trades (${d.messagesScanned} scanned)`).join('<br>');
-            resultEl.innerHTML = `<div class="card"><div class="card-body"><p class="text-success">${result.message || 'Smart fetch complete'}</p>${dateInfo ? `<p class="text-sm mt-2">${dateInfo}</p>` : ''}</div></div>`;
+            resultEl.innerHTML = `<div class="card"><div class="card-body"><p class="text-success">${result.message || 'Smart fetch complete'}</p>${dateInfo ? `<p class="text-sm mt-2">${dateInfo}</p>` : ''}<p class="text-xs text-muted mt-1">Debug: ${result.count} trades created, ${(result.datesFetched||[]).length} date(s) processed</p></div></div>`;
+            if (result.datesFetched && result.datesFetched.length > 0) {
+                const fetchedDate = result.datesFetched[0].date;
+                const datePicker = document.getElementById('trade-date');
+                if (datePicker && fetchedDate) datePicker.value = fetchedDate;
+            }
             this.loadTrades();
-            setTimeout(() => { resultEl.style.display = 'none'; }, 5000);
+            setTimeout(() => { resultEl.style.display = 'none'; }, 8000);
         } catch (err) {
             resultEl.innerHTML = `<div class="card"><div class="card-body"><p class="text-danger">${err.message}</p></div></div>`;
         }
