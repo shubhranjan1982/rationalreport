@@ -97,10 +97,14 @@ router.get('/callback', async (req, res) => {
     }
 
     const accessToken = settings.kite_api_key + ':' + data.data.access_token;
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(6, 0, 0, 0);
-    const expiry = tomorrow.toISOString().slice(0, 19);
+    const now = new Date();
+    const istNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    istNow.setDate(istNow.getDate() + 1);
+    istNow.setHours(6, 0, 0, 0);
+    const y = istNow.getFullYear();
+    const m = String(istNow.getMonth() + 1).padStart(2, '0');
+    const d = String(istNow.getDate()).padStart(2, '0');
+    const expiry = `${y}-${m}-${d}T06:00:00`;
 
     await query('UPDATE analyst_settings SET kite_access_token = ?, kite_token_expiry = ? WHERE id = ?', [accessToken, expiry, settings.id]);
 
