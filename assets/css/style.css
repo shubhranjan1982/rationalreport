@@ -52,6 +52,9 @@ a { color: var(--accent); text-decoration: none; }
 .btn-danger { background: var(--danger); color: white; }
 .btn-danger:hover { opacity: 0.9; }
 .btn-success { background: var(--success); color: white; }
+.btn-success:hover { opacity: 0.9; }
+.btn-warning { background: var(--warning); color: white; }
+.btn-warning:hover { opacity: 0.9; }
 .btn-sm { padding: 6px 12px; font-size: 12px; }
 .btn-block { width: 100%; }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
