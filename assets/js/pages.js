@@ -400,6 +400,7 @@ const Pages = {
             <div class="flex gap-2">
                 <input type="date" id="trade-date" value="${today}" onchange="Pages.loadTrades()" data-testid="input-trade-date">
                 <button class="btn btn-success" onclick="Pages.fetchTradesFromTelegram()" data-testid="button-fetch-telegram">Fetch from Telegram</button>
+                <button class="btn btn-warning" onclick="Pages.smartFetchFromTelegram()" data-testid="button-smart-fetch" title="Forward a message from any date to the relay channel, then click this">Smart Fetch</button>
                 <button class="btn btn-primary" onclick="Pages.showTradeModal()" data-testid="button-add-trade">+ Add Trade</button>
             </div>
         </div>
@@ -420,6 +421,21 @@ const Pages = {
             resultEl.innerHTML = `<div class="card"><div class="card-body"><p class="text-success">${result.message || 'Trades fetched successfully'}</p></div></div>`;
             this.loadTrades();
             setTimeout(() => { resultEl.style.display = 'none'; }, 3000);
+        } catch (err) {
+            resultEl.innerHTML = `<div class="card"><div class="card-body"><p class="text-danger">${err.message}</p></div></div>`;
+        }
+    },
+
+    async smartFetchFromTelegram() {
+        const resultEl = document.getElementById('fetch-telegram-result');
+        resultEl.style.display = 'block';
+        resultEl.innerHTML = '<div class="loading"><div class="spinner"></div> Smart Fetch: Reading forwarded messages from relay channel...</div>';
+        try {
+            const result = await App.api('/api/telegram/smart-fetch', 'POST', {});
+            const dateInfo = (result.datesFetched || []).map(d => `${d.date}: ${d.tradesFound} trades (${d.messagesScanned} scanned)`).join('<br>');
+            resultEl.innerHTML = `<div class="card"><div class="card-body"><p class="text-success">${result.message || 'Smart fetch complete'}</p>${dateInfo ? `<p class="text-sm mt-2">${dateInfo}</p>` : ''}</div></div>`;
+            this.loadTrades();
+            setTimeout(() => { resultEl.style.display = 'none'; }, 5000);
         } catch (err) {
             resultEl.innerHTML = `<div class="card"><div class="card-body"><p class="text-danger">${err.message}</p></div></div>`;
         }
