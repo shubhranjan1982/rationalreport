@@ -29,53 +29,68 @@ function getISTDateTime() {
 }
 
 function parseTelegramTradeMessage(text) {
-  if (!text || text.trim().length < 10) return null;
-  text = text.trim();
+  try {
+    if (!text || text.trim().length < 10) return null;
+    text = text.trim();
+    const upperText = text.toUpperCase();
 
-  const patterns = [
-    /(?:BUY|SELL)\s+(\w+)\s+(\d+(?:\.\d+)?)\s*(CE|PE|CALL|PUT)?/i,
-    /(\w+)\s+(\d+(?:\.\d+)?)\s*(CE|PE)\s+(?:@|AT|NEAR)\s*(\d+(?:\.\d+)?)/i,
-    /(\w+)\s*(?:ABOVE|@|AT|NEAR)\s*(\d+(?:\.\d+)?)/i,
-  ];
-
-  for (const pattern of patterns) {
-    const matches = text.match(pattern);
-    if (matches) {
-      let entry = null;
-      const entryMatch = text.match(/(?:ENTRY|CMP|@|AT|NEAR|ABOVE)\s*:?\s*(\d+(?:\.\d+)?)/i);
-      if (entryMatch) {
-        entry = parseFloat(entryMatch[1]);
-      } else if (matches[4]) {
-        entry = parseFloat(matches[4]);
-      } else if (matches[2] && !isNaN(matches[2])) {
-        entry = parseFloat(matches[2]);
-      }
-
-      let sl = null;
-      const slMatch = text.match(/(?:SL|STOP\s*LOSS)\s*:?\s*(\d+(?:\.\d+)?)/i);
-      if (slMatch) sl = parseFloat(slMatch[1]);
-
-      const targets = [];
-      const tgtRegex = /(?:TGT|TARGET|T)\s*\d*\s*:?\s*(\d+(?:\.\d+)?)/gi;
-      let tgtMatch;
-      while ((tgtMatch = tgtRegex.exec(text)) !== null) {
-        targets.push(tgtMatch[1]);
-      }
-
-      return {
-        stockName: matches[1].toUpperCase(),
-        strikePrice: matches[2] && !isNaN(matches[2]) ? parseFloat(matches[2]) : null,
-        optionType: matches[3] || '',
-        entryPrice: entry || 0,
-        stopLoss: sl,
-        targets,
-        lotSize: 1,
-        tradeType: 'INTRADAY',
-        segment: 'STOCK OPTION',
-      };
+    if (!upperText.includes('CE') && !upperText.includes('PE') && !upperText.includes('FUT')) {
+      return null;
     }
+    if (upperText.includes('DISCLAIMER') || upperText.includes('SEBI') || upperText.includes('NISM')) {
+      return null;
+    }
+
+    const EXPIRY_MONTHS = /^(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|JANUARY|FEBRUARY|MARCH|APRIL|JUNE|JULY|AUGUST|SEPTEMBER|OCTOBER|NOVEMBER|DECEMBER)$/i;
+    const stockPatterns = [
+      /([A-Z][A-Z0-9&]+)\s+(?:(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|M,?AR)\s+)?(\d+)\s+(CE|PE)\s+(?:ABV|ABOVE|@|AT)\s+(\d+(?:\.\d+)?)/i,
+      /([A-Z][A-Z0-9&]+)\s+(?:(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|M,?AR)\s+)?(\d+)\s+(CE|PE)\s+(\d+(?:\.\d+)?)/i,
+      /BUY\s+([A-Z][A-Z0-9&]+)\s+(?:(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC|M,?AR)\s+)?(\d+)\s+(CE|PE)\s+(?:@|AT)\s+(\d+(?:\.\d+)?)/i,
+    ];
+
+    for (const pattern of stockPatterns) {
+      const match = text.match(pattern);
+      if (match) {
+        let stockName = match[1];
+        if (EXPIRY_MONTHS.test(stockName)) {
+          const priorMatch = text.match(new RegExp(`([A-Z][A-Z0-9&]+)\\s+${stockName}`, 'i'));
+          if (priorMatch) stockName = priorMatch[1];
+        }
+        const strikePrice = parseFloat(match[2]);
+        const optionType = match[3].toUpperCase();
+        const entryPrice = parseFloat(match[4]);
+
+        let stopLoss = null;
+        const slMatch = text.match(/SL\s+(\d+(?:\.\d+)?)/i);
+        if (slMatch) stopLoss = parseFloat(slMatch[1]);
+
+        let targets = [];
+        const tgtMatch = text.match(/TGT?\s+([\d\s,.\-+]+)/i);
+        if (tgtMatch) {
+          targets = tgtMatch[1].split(/[\s,\-+]+/).filter(t => t && !isNaN(parseFloat(t))).map(t => t.trim());
+        }
+
+        const segment = upperText.includes('INDEX') ? 'INDEX OPTION' : 'STOCK OPTION';
+        const tradeType = upperText.includes('POSITIONAL') ? 'POSITIONAL' : 'INTRADAY';
+
+        return {
+          stockName,
+          strikePrice,
+          optionType,
+          entryPrice,
+          stopLoss,
+          targets,
+          segment,
+          tradeType,
+          lotSize: 1,
+          status: 'active',
+        };
+      }
+    }
+    return null;
+  } catch (e) {
+    return null;
   }
-  return null;
 }
 
 module.exports = { generateUUID, sanitize, getISTDateTime, parseTelegramTradeMessage };
