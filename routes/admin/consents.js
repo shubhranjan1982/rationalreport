@@ -41,7 +41,7 @@ router.delete('/before/:date', async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ message: 'Server error' }); }
 });
 
-router.get('/client/:clientId', async (req, res) => {
+router.get('/by-client/:clientId', async (req, res) => {
   try {
     const consents = await query('SELECT * FROM report_consents WHERE client_id = ? ORDER BY created_at DESC', [req.params.clientId]);
     res.json(consents);
