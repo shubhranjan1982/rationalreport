@@ -1,0 +1,7 @@
+node_modules/
+.env
+uploads/charts/*
+uploads/signatures/*
+!uploads/charts/.gitkeep
+!uploads/signatures/.gitkeep
+*.log
