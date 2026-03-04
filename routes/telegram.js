@@ -41,7 +41,7 @@ async function getTelegramSettings(clientId) {
   return await queryOne('SELECT * FROM analyst_settings LIMIT 1');
 }
 
-async function tgForwardAndRead(tgApi, relayChannelId, fromChatId, msgId, retries = 2, deleteQueue = null) {
+async function tgForwardAndRead(tgApi, relayChannelId, fromChatId, msgId, deleteQueue, retries = 2) {
   const params = new URLSearchParams({
     chat_id: relayChannelId,
     from_chat_id: fromChatId,
@@ -55,7 +55,7 @@ async function tgForwardAndRead(tgApi, relayChannelId, fromChatId, msgId, retrie
       if (data && data.error_code === 429 && retries > 0) {
         const wait = Math.min((data.parameters && data.parameters.retry_after) || 2, 3);
         await new Promise(r => setTimeout(r, wait * 1000));
-        return tgForwardAndRead(tgApi, relayChannelId, fromChatId, msgId, retries - 1, deleteQueue);
+        return tgForwardAndRead(tgApi, relayChannelId, fromChatId, msgId, deleteQueue, retries - 1);
       }
       const notFound = (data && data.description && data.description.includes('not found')) || false;
       return { ok: false, notFound };
@@ -76,11 +76,11 @@ async function tgForwardAndRead(tgApi, relayChannelId, fromChatId, msgId, retrie
   }
 }
 
-async function findLatestMsgId(tgApi, relayChannelId, fromChatId, deleteQueue = null) {
+async function findLatestMsgId(tgApi, relayChannelId, fromChatId, deleteQueue) {
   let upper = 10;
   let lastOk = 0;
   while (upper < 200000) {
-    const r = await tgForwardAndRead(tgApi, relayChannelId, fromChatId, upper, 2, deleteQueue);
+    const r = await tgForwardAndRead(tgApi, relayChannelId, fromChatId, upper, deleteQueue);
     if (r.ok) { lastOk = upper; upper *= 2; }
     else if (r.notFound) { break; }
     else { upper *= 2; }
@@ -90,7 +90,7 @@ async function findLatestMsgId(tgApi, relayChannelId, fromChatId, deleteQueue = 
   let hi = upper;
   while (lo < hi - 1) {
     const mid = Math.floor((lo + hi) / 2);
-    const r = await tgForwardAndRead(tgApi, relayChannelId, fromChatId, mid, 2, deleteQueue);
+    const r = await tgForwardAndRead(tgApi, relayChannelId, fromChatId, mid, deleteQueue);
     if (r.ok) lo = mid;
     else if (r.notFound) hi = mid;
     else lo = mid;
@@ -98,12 +98,12 @@ async function findLatestMsgId(tgApi, relayChannelId, fromChatId, deleteQueue = 
   return lo;
 }
 
-async function probeDate(tgApi, relayChannelId, fromChatId, msgId, radius = 20, targetDate = null, deleteQueue = null) {
+async function probeDate(tgApi, relayChannelId, fromChatId, msgId, radius = 20, targetDate, deleteQueue) {
   for (let offset = 0; offset <= radius; offset++) {
     const ids = offset === 0 ? [msgId] : [msgId + offset, msgId - offset];
     for (const id of ids) {
       if (id < 1) continue;
-      const r = await tgForwardAndRead(tgApi, relayChannelId, fromChatId, id, 2, deleteQueue);
+      const r = await tgForwardAndRead(tgApi, relayChannelId, fromChatId, id, deleteQueue);
       if (r.ok && !r.isNested) {
         if (targetDate) {
           const d1 = new Date(r.dateStr);
@@ -252,7 +252,7 @@ router.post('/fetch-trades', async (req, res) => {
         for (let offset = 0; offset <= 30 && probeDates.length < 5; offset++) {
           const id = latestMsgId - offset;
           if (id < 1) break;
-          const r = await tgForwardAndRead(tgApi, relayChannelId, channelInfo.channelId, id, 2, deleteQueue);
+          const r = await tgForwardAndRead(tgApi, relayChannelId, channelInfo.channelId, id, deleteQueue);
           if (r.ok) probeDates.push(r.dateStr);
         }
 
@@ -318,7 +318,7 @@ router.post('/fetch-trades', async (req, res) => {
         totalScanned++;
         if (consecutiveErrors >= 50) break;
 
-        const result = await tgForwardAndRead(tgApi, relayChannelId, channelInfo.channelId, msgId, 2, deleteQueue);
+        const result = await tgForwardAndRead(tgApi, relayChannelId, channelInfo.channelId, msgId, deleteQueue);
         if (!result.ok) {
           if (result.notFound) consecutiveErrors++;
           continue;
@@ -373,6 +373,294 @@ router.post('/fetch-trades', async (req, res) => {
 
     res.json({ trades: createdTrades, count: createdTrades.length, message: `${createdTrades.length} trades fetched from Telegram` });
   } catch (err) { console.error(err); res.status(500).json({ message: 'Server error' }); }
+});
+
+router.post('/smart-fetch', async (req, res) => {
+  try {
+    const clientId = getClientId(req);
+    const settings = await getTelegramSettings(clientId);
+    if (!settings || !settings.telegram_bot_token) {
+      return res.status(400).json({ message: 'Telegram bot token not configured in Settings.' });
+    }
+    const relayChannelId = settings.private_relay_channel_id || '';
+    if (!relayChannelId) {
+      return res.status(400).json({ message: 'Private Relay Channel ID not configured in Settings.' });
+    }
+
+    const botToken = settings.telegram_bot_token;
+    const tgApi = `https://api.telegram.org/bot${botToken}`;
+
+    let paidChannelIds = [];
+    const groupsQuery = 'SELECT * FROM channel_groups WHERE is_active = 1' + (clientId ? ' AND client_id = ?' : '');
+    const groupsParams = clientId ? [clientId] : [];
+    const groups = await query(groupsQuery, groupsParams);
+    if (groups.length > 0) {
+      paidChannelIds = groups.map(g => ({ channelId: g.paid_channel_id, groupId: g.id, segment: g.segment }));
+    } else if (settings.paid_channel_id) {
+      paidChannelIds = [{ channelId: settings.paid_channel_id, groupId: null, segment: 'STOCK OPTION' }];
+    }
+
+    const r = await fetch(`${tgApi}/getUpdates?offset=-100&allowed_updates=["channel_post"]`);
+    const updatesData = await r.json();
+
+    let relayMessages = [];
+    if (updatesData.ok && updatesData.result) {
+      relayMessages = updatesData.result
+        .filter(u => {
+          const msg = u.channel_post || u.message;
+          if (!msg) return false;
+          return String(msg.chat?.id) === String(relayChannelId);
+        })
+        .map(u => u.channel_post || u.message);
+    }
+
+    if (relayMessages.length === 0) {
+      const latestForward = async (msgId) => {
+        const resp = await fetch(`${tgApi}/forwardMessage?chat_id=${relayChannelId}&from_chat_id=${relayChannelId}&message_id=${msgId}&disable_notification=true`);
+        const d = await resp.json();
+        if (d.ok) {
+          fetch(`${tgApi}/deleteMessage?chat_id=${relayChannelId}&message_id=${d.result.message_id}`).catch(() => {});
+          return d.result;
+        }
+        return null;
+      };
+
+      let probeId = 1;
+      let lastOk = 0;
+      while (probeId < 50000) {
+        const resp = await fetch(`${tgApi}/forwardMessage?chat_id=${relayChannelId}&from_chat_id=${relayChannelId}&message_id=${probeId}&disable_notification=true`);
+        const d = await resp.json();
+        if (d.ok) {
+          fetch(`${tgApi}/deleteMessage?chat_id=${relayChannelId}&message_id=${d.result.message_id}`).catch(() => {});
+          lastOk = probeId;
+          probeId *= 2;
+        } else if ((d.description || '').includes('not found')) {
+          break;
+        } else {
+          probeId *= 2;
+        }
+      }
+      if (lastOk > 0) {
+        let lo = lastOk, hi = probeId;
+        while (lo < hi - 1) {
+          const mid = Math.floor((lo + hi) / 2);
+          const resp = await fetch(`${tgApi}/forwardMessage?chat_id=${relayChannelId}&from_chat_id=${relayChannelId}&message_id=${mid}&disable_notification=true`);
+          const d = await resp.json();
+          if (d.ok) {
+            fetch(`${tgApi}/deleteMessage?chat_id=${relayChannelId}&message_id=${d.result.message_id}`).catch(() => {});
+            lo = mid;
+          } else {
+            hi = mid;
+          }
+        }
+        for (let id = lo; id >= Math.max(1, lo - 50); id--) {
+          const msg = await latestForward(id);
+          if (msg && msg.forward_from_chat) {
+            relayMessages.push(msg);
+          }
+        }
+      }
+    }
+
+    if (relayMessages.length === 0) {
+      return res.status(400).json({ message: 'No forwarded messages found in relay channel. Forward a message from your paid channel to the relay channel first, then try again.' });
+    }
+
+    const dateAnchors = new Map();
+    for (const msg of relayMessages) {
+      if (!msg.forward_from_chat && !msg.forward_from_message_id) continue;
+      const origChatId = String(msg.forward_from_chat?.id || '');
+      const origMsgId = msg.forward_from_message_id || 0;
+      const timestamp = msg.forward_date || msg.date;
+      const dateStr = new Date(timestamp * 1000).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      const channelInfo = paidChannelIds.find(c => String(c.channelId) === origChatId) || null;
+      const key = `${dateStr}_${origChatId}`;
+      if (!dateAnchors.has(key)) {
+        dateAnchors.set(key, { date: dateStr, msgId: origMsgId, channelId: origChatId, channelInfo });
+      }
+      fetch(`${tgApi}/deleteMessage?chat_id=${relayChannelId}&message_id=${msg.message_id}`).catch(() => {});
+    }
+
+    if (dateAnchors.size === 0) {
+      return res.status(400).json({ message: 'No forwarded messages from paid channels found in relay. Make sure you forward messages FROM the paid channel TO the relay channel.' });
+    }
+
+    const allCreatedTrades = [];
+    const fetchResults = [];
+
+    for (const [key, anchor] of dateAnchors) {
+      const { date, msgId, channelId, channelInfo } = anchor;
+      const segment = channelInfo?.segment || 'STOCK OPTION';
+      const groupId = channelInfo?.groupId || null;
+
+      const existingRows = await query('SELECT entry_message_id FROM trades WHERE trade_date = ? AND entry_message_id IS NOT NULL' + (clientId ? ' AND client_id = ?' : ''), clientId ? [date, clientId] : [date]);
+      const existingMsgIds = {};
+      for (const row of existingRows) { existingMsgIds[row.entry_message_id] = true; }
+
+      const forwardAndRead = async (fwdMsgId, retries = 2) => {
+        const resp = await fetch(`${tgApi}/forwardMessage?chat_id=${relayChannelId}&from_chat_id=${channelId}&message_id=${fwdMsgId}&disable_notification=true`);
+        const d = await resp.json();
+        if (!d.ok) {
+          if (d.error_code === 429 && retries > 0) {
+            await new Promise(r => setTimeout(r, Math.min((d.parameters?.retry_after || 2), 3) * 1000));
+            return forwardAndRead(fwdMsgId, retries - 1);
+          }
+          return { ok: false, notFound: !!(d.description || '').includes('not found') };
+        }
+        const fwdMsg = d.result;
+        fetch(`${tgApi}/deleteMessage?chat_id=${relayChannelId}&message_id=${fwdMsg.message_id}`).catch(() => {});
+        const isNested = !!(fwdMsg.forward_from_chat && String(fwdMsg.forward_from_chat.id) !== String(channelId));
+        const origTimestamp = fwdMsg.forward_date || fwdMsg.date;
+        const istDateStr = new Date(origTimestamp * 1000).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+        return { ok: true, msg: fwdMsg, dateStr: istDateStr, isNested };
+      };
+
+      const scanStart = msgId + 50;
+      const scanEnd = Math.max(1, msgId - 200);
+      const allMessages = [];
+      const parsedTrades = [];
+      let totalScanned = 0;
+      let consecutiveErrors = 0;
+      let consecutiveBeforeTarget = 0;
+      let consecutiveAfterTarget = 0;
+      let hadTargetDateMatch = false;
+
+      for (let id = scanStart; id >= scanEnd && totalScanned < 500; id--) {
+        totalScanned++;
+        if (consecutiveErrors >= 50) break;
+
+        const result = await forwardAndRead(id);
+        if (!result.ok) {
+          if (result.notFound) consecutiveErrors++;
+          continue;
+        }
+        consecutiveErrors = 0;
+        const { msg: fwdMsg, dateStr: msgDateStr, isNested } = result;
+
+        let effectiveDateStr = msgDateStr;
+        if (isNested && msgDateStr !== date) effectiveDateStr = date;
+
+        if (effectiveDateStr !== date) {
+          if (effectiveDateStr < date) {
+            consecutiveBeforeTarget++;
+            if (consecutiveBeforeTarget >= 10) break;
+            continue;
+          }
+          consecutiveBeforeTarget = 0;
+          consecutiveAfterTarget++;
+          if (hadTargetDateMatch && consecutiveAfterTarget >= 30) break;
+          continue;
+        }
+        consecutiveBeforeTarget = 0;
+        consecutiveAfterTarget = 0;
+        hadTargetDateMatch = true;
+
+        const msgText = fwdMsg.text || fwdMsg.caption || '';
+        if (!msgText) continue;
+
+        const msgTimestamp = isNested ? fwdMsg.date : (fwdMsg.forward_date || fwdMsg.date);
+        const msgTimeIST = new Date(msgTimestamp * 1000);
+        const timeStr = msgTimeIST.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
+
+        allMessages.push({ message_id: id, text: msgText, date: msgTimestamp, time: timeStr, chat: { id: channelId } });
+
+        if (existingMsgIds[String(id)]) continue;
+
+        const parsed = parseTelegramTradeMessage(msgText);
+        if (parsed) {
+          parsedTrades.push({
+            ...parsed,
+            segment,
+            channelGroupId: groupId,
+            clientId,
+            tradeDate: effectiveDateStr,
+            entryMessageId: String(id),
+            rawMessages: [{ text: msgText, time: timeStr, msgId: id }],
+          });
+        }
+      }
+
+      for (const trade of parsedTrades) {
+        const entryMsgId = parseInt(trade.entryMessageId);
+        const stockUpper = trade.stockName.toUpperCase();
+        const strikeStr = String(trade.strikePrice);
+        const optStr = trade.optionType.toUpperCase();
+        const relatedMsgs = allMessages.filter(m => {
+          if (m.message_id === entryMsgId) return false;
+          const diff = m.message_id - entryMsgId;
+          if (diff < 1 || diff > 30) return false;
+          const upper = m.text.toUpperCase();
+          if (upper.includes('DISCLAIMER') || upper.includes('SEBI')) return false;
+          if (upper.includes(stockUpper) && (upper.includes(strikeStr) || upper.includes(optStr))) return true;
+          if (upper.includes(stockUpper) && /HIGH|BOOK|CMP|PROFIT|EXIT|TARGET|TGT|BOOKED|TRAIL|SL HIT|STOP LOSS/i.test(m.text)) return true;
+          return false;
+        }).sort((a, b) => a.message_id - b.message_id);
+        for (const rm of relatedMsgs) {
+          trade.rawMessages.push({ text: rm.text, time: rm.time, msgId: rm.message_id });
+        }
+
+        const threadMsgs = trade.rawMessages;
+        if (threadMsgs.length >= 2) {
+          const secondText = typeof threadMsgs[1] === 'string' ? threadMsgs[1] : threadMsgs[1].text;
+          const slMatch2 = secondText.match(/SL\s+(\d+(?:\.\d+)?)/i);
+          if (slMatch2 && !trade.stopLoss) trade.stopLoss = parseFloat(slMatch2[1]);
+          const tgtMatch2 = secondText.match(/TGT?\s+([\d\s,.\-+]+)/i);
+          if (tgtMatch2 && (!trade.targets || trade.targets.length === 0)) {
+            trade.targets = tgtMatch2[1].split(/[\s,\-+]+/).filter(t => t && !isNaN(parseFloat(t))).map(t => t.trim());
+          }
+        }
+        if (threadMsgs.length >= 3) {
+          const lastText = typeof threadMsgs[threadMsgs.length - 1] === 'string' ? threadMsgs[threadMsgs.length - 1] : threadMsgs[threadMsgs.length - 1].text;
+          const isSlHit = /SL\s*HIT|STOP\s*LOSS\s*(HIT|TRIGGERED|DONE)/i.test(lastText);
+          if (isSlHit && trade.stopLoss && trade.entryPrice) {
+            trade.exitPrice = trade.stopLoss;
+            trade.profitLoss = trade.stopLoss - trade.entryPrice;
+            trade.profitLossAmount = trade.profitLoss * (trade.lotSize || 1) * 2;
+            trade.status = 'closed';
+          } else {
+            const pricePatterns = [
+              /(?:BOOKED?\s*(?:AT)?|EXIT\s*(?:AT)?|CMP|HIGH\s*(?:MADE)?|PROFIT\s*(?:AT)?)\s*[:\-]?\s*(\d+(?:\.\d+)?)/i,
+              /(\d+(?:\.\d+)?)\s*(?:BOOKED|EXIT|HIGH|PROFIT|DONE|ACHIEVED)/i,
+            ];
+            for (const pat of pricePatterns) {
+              const m = lastText.match(pat);
+              if (m && trade.entryPrice) {
+                trade.exitPrice = parseFloat(m[1]);
+                trade.profitLoss = trade.exitPrice - trade.entryPrice;
+                trade.profitLossAmount = trade.profitLoss * (trade.lotSize || 1) * 2;
+                trade.status = 'closed';
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      for (const trade of parsedTrades) {
+        const tradeId = generateUUID();
+        const rawMsgsStr = JSON.stringify(trade.rawMessages.map(m => typeof m === 'string' ? m : `[${m.time}] ${m.text}`));
+        const targetsStr = Array.isArray(trade.targets) ? trade.targets.join(',') : (trade.targets || null);
+        await query(
+          'INSERT INTO trades (id, client_id, trade_date, stock_name, option_type, strike_price, entry_price, exit_price, stop_loss, lot_size, trade_type, segment, channel_group_id, entry_message_id, raw_messages, targets, profit_loss, profit_loss_amount, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [tradeId, clientId, trade.tradeDate, trade.stockName, trade.optionType || '', trade.strikePrice || null,
+           trade.entryPrice, trade.exitPrice || null, trade.stopLoss || null, trade.lotSize || 1,
+           trade.tradeType || 'INTRADAY', trade.segment || segment,
+           trade.channelGroupId || groupId, trade.entryMessageId, rawMsgsStr, targetsStr,
+           trade.profitLoss || null, trade.profitLossAmount || null, trade.status || 'active']
+        );
+        allCreatedTrades.push(tradeId);
+      }
+
+      fetchResults.push({ date, channelId, tradesFound: parsedTrades.length, messagesScanned: totalScanned });
+    }
+
+    res.json({
+      trades: allCreatedTrades,
+      count: allCreatedTrades.length,
+      datesFetched: fetchResults,
+      message: `${allCreatedTrades.length} trades fetched from ${fetchResults.length} date(s)`,
+    });
+  } catch (err) { console.error('[smart-fetch]', err); res.status(500).json({ message: err.message || 'Server error' }); }
 });
 
 router.post('/preview-summary', async (req, res) => {
